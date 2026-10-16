@@ -1,32 +1,77 @@
-from smolagents import CodeAgent, LiteLLMModel
 import os
-import dotenv  
+import dotenv
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from smolagents import CodeAgent, LiteLLMModel, tool
 
 dotenv.load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# 1. Setup the Model
-model_id = "gemini/gemini-3.8-flash"
-model = LiteLLMModel(model_id=model_id, api_key=GEMINI_API_KEY)
+CSV_FILE = "flight_price.csv"
+MODEL_ID = "gemini/gemini-3.8-flash"
 
-# 3. Initialize the CodeAgent (and pass the system prompt here!)
+os.makedirs("outputs", exist_ok=True)
+df = pd.read_csv(CSV_FILE)
+state = {"df": df}
+
+@tool
+def describe_data() -> str:
+    df = state["df"]
+    return f"{df.shape[0]} rows, {df.shape[1]} columns\n{df.dtypes}\n\n{df.describe(include='all').T.head(20)}"
+
+@tool
+def check_quality() -> str:
+    df = state["df"]
+    missing = df.isna().sum()
+    return f"Duplicate rows: {df.duplicated().sum()}\nMissing values:\n{missing[missing > 0].to_string() or 'none'}"
+
+@tool
+def group_summary(group_col: str, value_col: str, how: str = "mean") -> str:
+    out = state["df"].groupby(group_col)[value_col].agg(how)
+    return out.sort_values(ascending=False).head(20).to_string()
+
+@tool
+def top_correlations() -> str:
+    c = state["df"].corr(numeric_only=True)
+    pairs = c.where(np.triu(np.ones(c.shape, dtype=bool), 1)).stack()
+    return pairs.reindex(pairs.abs().sort_values(ascending=False).index).head(10).to_string()
+
+@tool
+def quick_plot(kind: str, x: str, y: str = "") -> str:
+    df = state["df"]
+    fig, ax = plt.subplots(figsize=(8, 5))
+    if kind == "hist":
+        df[x].plot.hist(ax=ax)
+    elif kind == "bar":
+        df.groupby(x)[y].mean().plot.bar(ax=ax)
+    else:
+        df.plot(kind=kind, x=x, y=y, ax=ax)
+    path = f"outputs/{kind}_{x}_{y}.png"
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
+    return path
+
+model = LiteLLMModel(model_id=MODEL_ID, api_key=GEMINI_API_KEY)
 agent = CodeAgent(
-    tools=[],  # Uses built-in python interpreter and base tools
+    tools=[describe_data, check_quality, group_summary, top_correlations, quick_plot],
     model=model,
-    
-    add_base_tools=True,
-    additional_authorized_imports=[  # Strictly limit allowed libraries for security
-        "pandas", "numpy", "datetime",
-        "matplotlib", "plotly", "seaborn", "sklearn"
-    ]
+    additional_authorized_imports=["pandas", "numpy"],
+    max_steps=6,
 )
 
-# 4. Run the Agent
-# We pass `input_csv` via `additional_args` so the agent has access to the file path variable
-task = "Calculate the average prices by airline from the dataset, create a bar plot visualization, and summarize the findings."
-
-agent.run(
-    task,
-    additional_args={"input_csv": "flight_price.csv"},  # Replace with your actual CSV path,
-    max_steps=4
-)
+while True:
+    question = input("\nAsk a question (or type quit): ")
+    if question.lower() == "quit":
+        break
+    answer = agent.run(
+        f"The data is already loaded as a pandas table called df. "
+        f"Its columns are {list(df.columns)}. Use the tools when they fit. "
+        f"Charts are saved in the 'outputs' folder; tell me the file name. "
+        f"Question: {question}",
+        additional_args={"df": df},
+    )
+    print("\nANSWER:", answer)
