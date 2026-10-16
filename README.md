@@ -1,5 +1,8 @@
 # Analyst-AI-Byte
 Byte task1
+It is a dump and not chronological dumps just two commits
+
+
 Setup -
 1.Clone the Repository:
 2.git clone https://github.com/pratyansh-cs/Analyst-AI-Byte.git
